@@ -72,7 +72,7 @@ const authorize = (...roles) => {
     next();
   };
 };
-
+const adminAuth = authorize("admin");
 module.exports = {
   auth: protect,
   protect,
