@@ -18,17 +18,14 @@ const youtubeRoutes = require("./routes/youtube.routes");
 
 const app = express();
 connectDB();
-mongoose
-  .connect(process.env.MONGO_URI)
-  .then(async () => {
-    console.log("MongoDB connected successfully!");
 
+setTimeout(async () => {
+  try {
     await seedAdmin();
-  })
-  .catch((err) => {
-    console.error("MongoDB connection failed:", err.message);
-    process.exit(1);
-  });
+  } catch (err) {
+    console.error("Seed Admin Error:", err);
+  }
+}, 3000);
 
 // Enable CORS for all origins and methods
 // app.use(cors());
