@@ -2,6 +2,7 @@ require("dotenv").config();
 const express = require("express");
 const bodyParser = require("body-parser");
 const cors = require("cors");
+const seedAdmin = require("./src/utils/seedAdmin");
 
 const swaggerUi = require("swagger-ui-express");
 const swaggerJsdoc = require("swagger-jsdoc");
@@ -17,6 +18,17 @@ const youtubeRoutes = require("./routes/youtube.routes");
 
 const app = express();
 connectDB();
+mongoose
+  .connect(process.env.MONGO_URI)
+  .then(async () => {
+    console.log("MongoDB connected successfully!");
+
+    await seedAdmin();
+  })
+  .catch((err) => {
+    console.error("MongoDB connection failed:", err.message);
+    process.exit(1);
+  });
 
 // Enable CORS for all origins and methods
 // app.use(cors());
