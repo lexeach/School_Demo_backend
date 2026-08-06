@@ -107,6 +107,125 @@ function score(query,pdf){
 
 }
 
+
+//------------------------------------------------------
+// Search One Website
+//------------------------------------------------------
+
+async function searchSite(query, site) {
+
+    try {
+
+        const url =
+
+            "https://html.duckduckgo.com/html/";
+
+        const response = await axios.post(
+
+            url,
+
+            new URLSearchParams({
+
+                q: `site:${site} ${query} filetype:pdf`
+
+            }),
+
+            {
+
+                headers: {
+
+                    "Content-Type":
+
+                        "application/x-www-form-urlencoded",
+
+                    "User-Agent":
+
+                        "Mozilla/5.0"
+
+                }
+
+            }
+
+        );
+
+        const $ = cheerio.load(
+
+            response.data
+
+        );
+
+        const pdfs = [];
+
+        $(".result").each((_, element) => {
+
+            const title =
+
+                $(element)
+
+                    .find(".result__title")
+
+                    .text()
+
+                    .trim();
+
+            const href =
+
+                $(element)
+
+                    .find(".result__url")
+
+                    .text()
+
+                    .trim();
+
+            if (
+
+                href &&
+
+                href.toLowerCase()
+
+                    .includes(".pdf")
+
+            ) {
+
+                pdfs.push({
+
+                    title,
+
+                    url: href,
+
+                    source: site
+
+                });
+
+            }
+
+        });
+
+        return pdfs;
+
+    }
+
+    catch (err) {
+
+        console.log(
+
+            "PDF Search Error",
+
+            site,
+
+            err.message
+
+        );
+
+        return [];
+
+    }
+
+}
+
+
+
 //------------------------------------------------------
 // Search PDFs
 //------------------------------------------------------
