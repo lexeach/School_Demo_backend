@@ -236,29 +236,35 @@ async function searchPDFs(query){
 
     for(const source of SOURCES){
 
-        try{
+        try {
 
-            const googleQuery =
+    const pdfs = await searchSite(
 
-                `site:${source.search} ${query} pdf`;
+        query,
 
-            // search logic
-            // next step me add karenge
+        source.search
 
-        }
+    );
 
-        catch(err){
+    results.push(
 
-            console.log(
+        ...pdfs
 
-                source.name,
+    );
 
-                err.message
+}
 
-            );
+catch (err) {
 
-        }
+    console.log(
 
+        source.name,
+
+        err.message
+
+    );
+
+}
     }
 
     const unique =
