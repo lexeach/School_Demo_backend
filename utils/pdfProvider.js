@@ -9,36 +9,30 @@ const SOURCES = [
 
     {
         name: "NCERT",
-        search:
-            "https://ncert.nic.in/textbook.php"
+        search: "ncert.nic.in"
     },
 
     {
-        name: "CBSE Academic",
-        search:
-            "https://cbseacademic.nic.in"
+        name: "CBSE",
+        search: "cbseacademic.nic.in"
     },
 
     {
         name: "SelfStudys",
-        search:
-            "https://www.selfstudys.com"
+        search: "selfstudys.com"
     },
 
     {
         name: "Vedantu",
-        search:
-            "https://www.vedantu.com"
+        search: "vedantu.com"
     },
 
     {
-        name: "Physics Wallah",
-        search:
-            "https://www.pw.live"
-    },
+        name: "PW",
+        search: "pw.live"
+    }
 
 ];
-
 //------------------------------------------------------
 // Remove Duplicate PDFs
 //------------------------------------------------------
