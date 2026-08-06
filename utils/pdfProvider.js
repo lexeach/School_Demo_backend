@@ -254,6 +254,37 @@ async function searchSite(query, site) {
 
 });
 
+        //--------------------------------------------------
+// Remove duplicate domains
+//--------------------------------------------------
+
+const seenDomains = new Set();
+
+const uniqueDomainPDFs = [];
+
+for (const pdf of pdfs) {
+
+    try {
+
+        const hostname = new URL(pdf.url).hostname.replace(/^www\./, "");
+
+        if (!seenDomains.has(hostname)) {
+
+            seenDomains.add(hostname);
+
+            uniqueDomainPDFs.push(pdf);
+
+        }
+
+    } catch {
+
+        uniqueDomainPDFs.push(pdf);
+
+    }
+
+}
+
+pdfs = uniqueDomainPDFs;
         return pdfs;
 
     }
