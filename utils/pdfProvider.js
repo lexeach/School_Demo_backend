@@ -116,31 +116,39 @@ async function searchSite(query, site) {
 
         const response = await axios.post(
 
-            url,
+    url,
 
-            new URLSearchParams({
+    new URLSearchParams({
 
-                q: `site:${site} ${query} filetype:pdf`
+        q: `site:${site} ${query} pdf`
 
-            }),
+    }),
 
-            {
+    {
 
-                headers: {
+        timeout: 15000,
 
-                    "Content-Type":
+        maxRedirects: 5,
 
-                        "application/x-www-form-urlencoded",
+        headers: {
 
-                    "User-Agent":
+            "Content-Type":
 
-                        "Mozilla/5.0"
+                "application/x-www-form-urlencoded",
 
-                }
+            "User-Agent":
 
-            }
+                "Mozilla/5.0",
 
-        );
+            "Accept-Language":
+
+                "en-US,en;q=0.9"
+
+        }
+
+    }
+
+);
 
         const $ = cheerio.load(
 
@@ -150,51 +158,101 @@ async function searchSite(query, site) {
 
         const pdfs = [];
 
-        $(".result").each((_, element) => {
+       $(".result").each((_, element) => {
 
-            const title =
+    const title =
 
-                $(element)
+        $(element)
 
-                    .find(".result__title")
+            .find(".result__title")
 
-                    .text()
+            .text()
 
-                    .trim();
+            .trim();
 
-            const href =
+    //--------------------------------------------------
+    // Actual Link
+    //--------------------------------------------------
 
-                $(element)
+    let href =
 
-                    .find(".result__url")
+        $(element)
 
-                    .text()
+            .find(".result__title a")
 
-                    .trim();
+            .attr("href") ||
 
-            if (
+        "";
 
-                href &&
+    if (!href) {
 
-                href.toLowerCase()
+        return;
 
-                    .includes(".pdf")
+    }
 
-            ) {
+    //--------------------------------------------------
+    // Decode DuckDuckGo Redirect
+    //--------------------------------------------------
 
-                pdfs.push({
+    try {
 
-                    title,
+        if (href.startsWith("//")) {
 
-                    url: href,
+            href = "https:" + href;
 
-                    source: site
+        }
 
-                });
+        if (href.includes("uddg=")) {
 
-            }
+            const params =
+
+                new URL(href).searchParams;
+
+            href =
+
+                decodeURIComponent(
+
+                    params.get("uddg") || ""
+
+                );
+
+        }
+
+    }
+
+    catch (e) {}
+
+    //--------------------------------------------------
+    // Valid PDF Only
+    //--------------------------------------------------
+
+    if (
+
+        href.toLowerCase().includes(".pdf")
+
+    ) {
+
+        pdfs.push({
+
+            title,
+
+            url: href,
+
+            source: site,
+
+            score: score(query, {
+
+                title,
+
+                url: href,
+
+            }),
 
         });
+
+    }
+
+});
 
         return pdfs;
 
@@ -261,17 +319,24 @@ catch (err) {
 }
     }
 
-    const unique =
-        removeDuplicates(results);
+   const unique =
+    removeDuplicates(results)
 
-    unique.sort((a,b)=>
+        .filter(pdf =>
 
-        score(query,b)-score(query,a)
+            pdf.url.startsWith("http")
 
-    );
+        )
 
-    return unique.slice(0,5);
+        .sort(
 
+            (a, b) =>
+
+                b.score - a.score
+
+        );
+
+return unique.slice(0, 5);
 }
 
 module.exports={
