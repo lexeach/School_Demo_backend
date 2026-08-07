@@ -345,6 +345,8 @@ for (const pdf of pdfs) {
 }
 
 return selected;
+    }
+}
 
 //------------------------------------------------------
 // Search PDFs
