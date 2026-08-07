@@ -156,7 +156,7 @@ async function searchSite(query, site) {
 
         );
 
-        const pdfs = [];
+        let pdfs = [];
 
        $(".result").each((_, element) => {
 
@@ -258,6 +258,12 @@ async function searchSite(query, site) {
 // Remove duplicate domains
 //--------------------------------------------------
 
+//--------------------------------------------------
+// Keep Best PDF From Every Domain
+//--------------------------------------------------
+
+pdfs.sort((a, b) => b.score - a.score);
+
 const seenDomains = new Set();
 
 const uniqueDomainPDFs = [];
@@ -284,9 +290,7 @@ for (const pdf of pdfs) {
 
 }
 
-pdfs = uniqueDomainPDFs;
-        return pdfs;
-
+return uniqueDomainPDFs;
     }
 
     catch (err) {
