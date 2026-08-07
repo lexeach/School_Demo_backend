@@ -262,56 +262,89 @@ async function searchSite(query, site) {
 // Keep Best PDF From Every Domain
 //--------------------------------------------------
 
+//--------------------------------------------------
+// Domain Priority (One PDF Per Domain)
+//--------------------------------------------------
+
 pdfs.sort((a, b) => b.score - a.score);
 
-const seenDomains = new Set();
+const DOMAIN_PRIORITY = [
+    "ncert.nic.in",
+    "cbse.gov.in",
+    "selfstudys.com",
+    "vedantu.com",
+    "pw.live",
+    "byjus.com",
+    "toppr.com",
+    "khanacademy.org",
+    "learncbse.in",
+    "jagranjosh.com",
+];
 
-const uniqueDomainPDFs = [];
+const selected = [];
+const usedDomains = new Set();
+
+function normalizeDomain(host) {
+    return host.replace(/^www\./, "").toLowerCase();
+}
+
+// Trusted domains first
+for (const domain of DOMAIN_PRIORITY) {
+
+    const pdf = pdfs.find(item => {
+
+        try {
+            const host = normalizeDomain(new URL(item.url).hostname);
+            return host.includes(domain);
+        } catch {
+            return false;
+        }
+
+    });
+
+    if (pdf) {
+
+        selected.push(pdf);
+        usedDomains.add(domain);
+
+    }
+
+}
+
+// Remaining domains (one each)
 
 for (const pdf of pdfs) {
 
     try {
 
-        const hostname = new URL(pdf.url).hostname.replace(/^www\./, "");
+        const host = normalizeDomain(new URL(pdf.url).hostname);
 
-        if (!seenDomains.has(hostname)) {
+        let alreadyAdded = false;
 
-            seenDomains.add(hostname);
+        for (const item of selected) {
 
-            uniqueDomainPDFs.push(pdf);
+            const itemHost = normalizeDomain(new URL(item.url).hostname);
+
+            if (itemHost === host) {
+
+                alreadyAdded = true;
+                break;
+
+            }
 
         }
 
-    } catch {
+        if (!alreadyAdded) {
 
-        uniqueDomainPDFs.push(pdf);
+            selected.push(pdf);
 
-    }
+        }
 
-}
-
-return uniqueDomainPDFs;
-    }
-
-    catch (err) {
-
-        console.log(
-
-            "PDF Search Error",
-
-            site,
-
-            err.message
-
-        );
-
-        return [];
-
-    }
+    } catch {}
 
 }
 
-
+return selected;
 
 //------------------------------------------------------
 // Search PDFs
