@@ -452,7 +452,7 @@ async function searchPDFs(query) {
         );
 
 return unique.slice(0, 5);
-}
+
 
 module.exports={
 
