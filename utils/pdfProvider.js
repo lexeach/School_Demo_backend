@@ -345,6 +345,9 @@ for (const pdf of pdfs) {
 }
 
 return selected;
+    } catch (error) {
+        console.error(`Error searching site ${site}:`, error.message);
+        return [];
     }
 }
 
