@@ -355,107 +355,79 @@ return selected;
 // Search PDFs
 //------------------------------------------------------
 
+//------------------------------------------------------
+// Search PDFs
+//------------------------------------------------------
+
 async function searchPDFs(query) {
 
-    try {
+    const sourceResults = await Promise.all(
 
-        //--------------------------------------------------
-        // Search All Trusted Sources In Parallel
-        //--------------------------------------------------
+        SOURCES.map(async (source) => {
 
-        const sourceResults = await Promise.all(
+            try {
 
-            SOURCES.map(async (source) => {
+                const pdfs = await searchSite(
+                    query,
+                    source.search
+                );
 
-                try {
+                return pdfs || [];
 
-                    const pdfs = await searchSite(
-                        query,
-                        source.search
-                    );
+            } catch (err) {
 
-                    return pdfs;
+                console.log(
+                    "PDF Search Error:",
+                    source.name,
+                    err.message
+                );
 
-                } catch (err) {
+                return [];
 
-                    console.log(
-                        `PDF Search Error - ${source.name}:`,
-                        err.message
-                    );
+            }
 
-                    return [];
+        })
 
-                }
+    );
 
-            })
+    //--------------------------------------------------
+    // Merge all source results
+    //--------------------------------------------------
 
+    const results = sourceResults.flat();
+
+    //--------------------------------------------------
+    // Remove duplicate URLs
+    //--------------------------------------------------
+
+    const unique = removeDuplicates(results)
+        .filter(pdf =>
+            pdf &&
+            pdf.url &&
+            pdf.url.startsWith("http")
         );
 
-        //--------------------------------------------------
-        // Merge All Results
-        //--------------------------------------------------
+    //--------------------------------------------------
+    // Highest score first
+    //--------------------------------------------------
 
-        const results = sourceResults.flat();
+    unique.sort(
+        (a, b) =>
+            (b.score || 0) - (a.score || 0)
+    );
 
-        //--------------------------------------------------
-        // Remove Exact Duplicate URLs
-        //--------------------------------------------------
+    //--------------------------------------------------
+    // Keep maximum 5 results
+    //--------------------------------------------------
 
-        const unique = removeDuplicates(results)
-            .filter(pdf =>
-                pdf.url &&
-                pdf.url.startsWith("http")
-            );
-
-        //--------------------------------------------------
-        // Sort By Relevance Score
-        //--------------------------------------------------
-
-        unique.sort(
-            (a, b) => b.score - a.score
-        );
-
-        //--------------------------------------------------
-        // Return Maximum 5 PDFs
-        //--------------------------------------------------
-
-        return unique.slice(0, 5);
-
-    } catch (err) {
-
-        console.error(
-            "PDF Search Failed:",
-            err
-        );
-
-        return [];
-
-    }
-
+    return unique.slice(0, 5);
 }
 
-   const unique =
-    removeDuplicates(results)
 
-        .filter(pdf =>
+//------------------------------------------------------
+// Export
+//------------------------------------------------------
 
-            pdf.url.startsWith("http")
-
-        )
-
-        .sort(
-
-            (a, b) =>
-
-                b.score - a.score
-
-        );
-
-return unique.slice(0, 5);
-
-
-module.exports={
-
+module.exports = {
     searchPDFs,
-
 };
