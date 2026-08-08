@@ -99,6 +99,24 @@ const swaggerOptions = {
 const swaggerDocs = swaggerJsdoc(swaggerOptions);
 app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(swaggerDocs));
 
+// autowakeup freen render server after 14 minits
+const https = require('https');
+
+const RENDER_URL = process.env.RENDER_URL || 'https://school-demo-backend.onrender.com';
+const PING_INTERVAL = 14 * 60 * 1000; // 14 minutes in milliseconds
+
+setInterval(() => {
+    https.get(RENDER_URL, (res) => {
+        console.log(`Self-ping response status: ${res.statusCode}`);
+    }).on('error', (err) => {
+        console.error('Self-ping failed:', err.message);
+    });
+}, PING_INTERVAL);
+
+
+
+
+
 // Middleware
 app.use(bodyParser.json());
 app.use("/api/users", userRoutes);
