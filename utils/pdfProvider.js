@@ -355,42 +355,84 @@ return selected;
 // Search PDFs
 //------------------------------------------------------
 
-async function searchPDFs(query){
+async function searchPDFs(query) {
 
-    const results=[];
+    try {
 
-    for(const source of SOURCES){
+        //--------------------------------------------------
+        // Search All Trusted Sources In Parallel
+        //--------------------------------------------------
 
-        try {
+        const sourceResults = await Promise.all(
 
-    const pdfs = await searchSite(
+            SOURCES.map(async (source) => {
 
-        query,
+                try {
 
-        source.search
+                    const pdfs = await searchSite(
+                        query,
+                        source.search
+                    );
 
-    );
+                    return pdfs;
 
-    results.push(
+                } catch (err) {
 
-        ...pdfs
+                    console.log(
+                        `PDF Search Error - ${source.name}:`,
+                        err.message
+                    );
 
-    );
+                    return [];
 
-}
+                }
 
-catch (err) {
+            })
 
-    console.log(
+        );
 
-        source.name,
+        //--------------------------------------------------
+        // Merge All Results
+        //--------------------------------------------------
 
-        err.message
+        const results = sourceResults.flat();
 
-    );
+        //--------------------------------------------------
+        // Remove Exact Duplicate URLs
+        //--------------------------------------------------
 
-}
+        const unique = removeDuplicates(results)
+            .filter(pdf =>
+                pdf.url &&
+                pdf.url.startsWith("http")
+            );
+
+        //--------------------------------------------------
+        // Sort By Relevance Score
+        //--------------------------------------------------
+
+        unique.sort(
+            (a, b) => b.score - a.score
+        );
+
+        //--------------------------------------------------
+        // Return Maximum 5 PDFs
+        //--------------------------------------------------
+
+        return unique.slice(0, 5);
+
+    } catch (err) {
+
+        console.error(
+            "PDF Search Failed:",
+            err
+        );
+
+        return [];
+
     }
+
+}
 
    const unique =
     removeDuplicates(results)
