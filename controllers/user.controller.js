@@ -196,10 +196,26 @@ const updateProfile = asyncHandler(async (req, res) => {
     },
   });
 });
+const getUsers = asyncHandler(async (req, res) => {
+  try {
+    const users = await User.find({})
+      .select("-password")
+      .sort({ createdAt: -1 });
 
+    res.status(200).json({
+      success: true,
+      data: users,
+      total: users.length,
+    });
+  } catch (error) {
+    res.status(500);
+    throw new Error(error.message);
+  }
+});
 module.exports = {
   registerUser,
   loginUser,
   getProfile,
   updateProfile,
+  getUsers,
 };
