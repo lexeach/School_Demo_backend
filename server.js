@@ -14,6 +14,7 @@ const childRoutes = require("./routes/child.routes");
 const subjectRoutes = require("./routes/subject.routes");
 const syllabusRoutes = require("./routes/syllabus.routes");
 const learningVerificationRoutes = require("./routes/learningVerification.route");
+const r3FactorRoutes = require("./routes/r3Factor.routes");
 const youtubeRoutes = require("./routes/youtube.routes");
 const pdfRoutes = require("./routes/pdf.routes");
 
@@ -41,7 +42,7 @@ const allowedOrigins =
     "https://svn.exowa.click",
   "https://auto-paper.netlify.app", // Deployed host
   "http://localhost:5173", // Local development
-  // "http://localhost:5174", // Local development
+  "https://exowa-test.netlify.app", // Local development
 ];
 app.use(
   cors({
@@ -102,7 +103,9 @@ app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(swaggerDocs));
 // autowakeup freen render server after 14 minits
 const https = require('https');
 
-const RENDER_URL = process.env.RENDER_URL || 'https://school-demo-backend.onrender.com';
+//const RENDER_URL = process.env.RENDER_URL || 'https://school-demo-backend-forked.onrender.com';
+
+const RENDER_URL = process.env.RENDER_URL || 'https://school-demo-backend-forked-new.onrender.com';
 const PING_INTERVAL = 14 * 60 * 1000; // 14 minutes in milliseconds
 
 setInterval(() => {
@@ -125,6 +128,7 @@ app.use("/api/children", childRoutes);
 app.use("/api/subjects", subjectRoutes);
 app.use("/api/syllabuses", syllabusRoutes);
 app.use("/api/learning-verification",learningVerificationRoutes);
+app.use("/api/r3", r3FactorRoutes);
 app.use("/api/youtube", youtubeRoutes);
 app.use("/api/pdf", pdfRoutes);
 
