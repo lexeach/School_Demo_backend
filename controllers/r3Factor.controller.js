@@ -20,8 +20,11 @@ const authorizePaper = async (paper, userId) => {
   );
 };
 
-const resolveQuestion = (paper, questionId) =>
-  (paper.questions || []).find(q => String(q?._id || "") === String(questionId));
+// The current Paper schema stores questions as plain objects ([Object]),
+// so they do not have Mongoose subdocument _id values. Use the already-existing
+// questionNumber, scoped by paperId, as the stable key. Never generate an ID.
+const resolveQuestion = (paper, questionKey) =>
+  (paper.questions || []).find(q => String(q?.questionNumber ?? "") === String(questionKey));
 
 const safeFactor = (factor, progressMap) => {
   const own = progressMap.get(factor.factorId);
@@ -102,16 +105,17 @@ const makeFactorSet = async ({ factors, question, paper, parentId, depth }) => {
 exports.getOrGenerate = async (req, res) => {
   try {
     const { paperId, questionId, questionNumber } = req.body;
-    if (!paperId || !questionId) return customErrorResponse(res, 400, "paperId and the existing questionId are required.");
+    if (!paperId || !questionId || !Number.isInteger(Number(questionId))) return customErrorResponse(res, 400, "paperId and a valid existing questionNumber are required.");
     const paper = await Paper.findById(paperId);
     if (!paper) return customErrorResponse(res, 404, "Paper not found.");
     if (!(await authorizePaper(paper, req.user.id))) return customErrorResponse(res, 403, "You are not allowed to access this question.");
 
-    // Use the already-existing Paper.questions subdocument _id without changing it.
+    // questionId is the API field name for the existing questionNumber key.
+    // No MongoDB question _id is created, regenerated, or modified.
     const question = resolveQuestion(paper, questionId);
-    if (!question) return customErrorResponse(res, 404, "The supplied questionId does not match a question in this paper.");
+    if (!question) return customErrorResponse(res, 404, "The supplied questionNumber does not match a question in this paper.");
 
-    const displayNumber = Number(question.questionNumber || questionNumber || 0);
+    const displayNumber = Number(question.questionNumber);
     let record = await R3Factor.findOne({ paper: paperId, questionId: String(questionId) });
     if (!record) {
       const prompt = `You are an expert school teacher. Analyse the exact question and identify the concept/topic actually required to solve it, not merely its chapter. Generate the topic, a secondary factor, and 2 to 5 immediate primary/root factors. Do not recursively decompose yet. For each factor provide a concise student-friendly description and learningContent. The system will generate a separate verification set for every factor. Return only JSON: {"topic":"","secondaryFactor":"","factors":[{"name":"","description":"","learningContent":""}]}. Context: class=${paper.className}; subject=${paper.subject}; board=${paper.syllabus}; chapter=${paper.chapter_from}; language=${paper.language}. Question: ${JSON.stringify(question)}`;
@@ -138,7 +142,7 @@ exports.submitFactorVerification = async (req, res) => {
     const paper = await Paper.findById(paperId);
     if (!paper) return customErrorResponse(res, 404, "Paper not found.");
     if (!(await authorizePaper(paper, req.user.id))) return customErrorResponse(res, 403, "You are not allowed to access this question.");
-    if (!resolveQuestion(paper, questionId)) return customErrorResponse(res, 404, "Question ID does not belong to this paper.");
+    if (!resolveQuestion(paper, questionId)) return customErrorResponse(res, 404, "Question number does not belong to this paper.");
     const record = await R3Factor.findOne({ paper: paperId, questionId: String(questionId) });
     if (!record) return customErrorResponse(res, 404, "R3 record not found.");
     const factor = findFactor(record.factors, factorId);
@@ -162,7 +166,7 @@ exports.expandFactor = async (req, res) => {
     const paperAccess = await Paper.findById(paperId);
     if (!paperAccess) return customErrorResponse(res, 404, "Paper not found.");
     if (!(await authorizePaper(paperAccess, req.user.id))) return customErrorResponse(res, 403, "You are not allowed to access this question.");
-    if (!resolveQuestion(paperAccess, questionId)) return customErrorResponse(res, 404, "Question ID does not belong to this paper.");
+    if (!resolveQuestion(paperAccess, questionId)) return customErrorResponse(res, 404, "Question number does not belong to this paper.");
     const record = await R3Factor.findOne({ paper: paperId, questionId: String(questionId) });
     if (!record) return customErrorResponse(res, 404, "R3 record not found.");
     const factor = findFactor(record.factors, factorId);
