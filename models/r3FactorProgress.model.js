@@ -2,7 +2,7 @@ const mongoose = require("mongoose");
 
 const r3FactorProgressSchema = new mongoose.Schema({
   paper: { type: mongoose.Schema.Types.ObjectId, ref: "Paper", required: true },
-  // Stores the existing questionNumber as a string; scoped by paper, no generated ID.
+  // Existing per-paper question reference (questionNumber for current plain-object questions).
   questionId: { type: String, required: true },
   questionIndex: { type: Number, required: true },
   user: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },

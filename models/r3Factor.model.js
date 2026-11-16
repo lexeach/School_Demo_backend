@@ -20,7 +20,7 @@ const factorSchema = new mongoose.Schema({
 
 const r3FactorSchema = new mongoose.Schema({
   paper: { type: mongoose.Schema.Types.ObjectId, ref: "Paper", required: true },
-  // Exact existing Paper.questions subdocument _id; never generate or rewrite it here.
+  // Existing per-paper question reference (questionNumber for current plain-object questions).
   questionId: { type: String, required: true },
   questionIndex: { type: Number, required: true },
   originalQuestion: { type: mongoose.Schema.Types.Mixed, required: true },

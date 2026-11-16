@@ -1,19 +1,18 @@
-# R3 Factor question lookup key
+# R3 Factor update — preserve existing question IDs
 
-The current Paper schema stores `questions` as `[Object]`. Those question objects contain `questionNumber` but do not have Mongoose subdocument `_id` values. R3 therefore uses the existing `questionNumber`, scoped by `paper`, as its stable lookup key.
-
-- No question ID is generated, regenerated, or modified.
-- No `Paper.questions` records are modified.
-- R3 structure is keyed by `paper + questionNumber` (stored in the API/model field `questionId` as a string).
-- Student progress is keyed by `paper + questionNumber + user + factorId`.
-- Question number remains the existing identifier/order value from the paper.
-- The migration backfills only R3 records' lookup key from their existing `questionIndex`, then replaces obsolete R3 indexes. It does not touch question documents.
+- The existing `Paper.questions[*]._id` is read as-is. This update does not create, rewrite, regenerate, or migrate question IDs.
+- R3 structure is keyed by `paper + questionId`.
+- Student progress is keyed by `paper + questionId + user + factorId`.
+- Question number is retained only as display/order metadata.
+- All three R3 endpoints validate the question ID against the existing Paper document and enforce paper access.
 - Existing I Learnt endpoints and models are unchanged.
 
 ## One-time database index migration
 
-Run once using the backend's existing `MONGO_URI`:
+Before deploying the backend, set the existing `MONGO_URI` in the shell and run:
 
 `node scripts/migrate-r3-question-id-indexes.js`
 
-Then deploy backend and frontend ZIPs.
+The script only replaces obsolete unique R3 indexes based on `questionIndex` with indexes based on `questionId`. It does not modify Paper question documents or any question IDs.
+
+Then deploy the backend and frontend ZIPs. R3 requires each question object to already contain its existing `_id`. If an existing question has no `_id`, the API returns a clear error rather than inventing one.

@@ -3,13 +3,6 @@ const mongoose = require("mongoose");
 
 async function migrateCollection(collectionName, targetKeys) {
   const collection = mongoose.connection.collection(collectionName);
-  // Backfill only the R3 lookup key from the already-stored questionIndex.
-  // This does not touch Paper.questions or create/change any question ID.
-  const backfill = await collection.updateMany(
-    { questionId: { $exists: false }, questionIndex: { $exists: true } },
-    [{ $set: { questionId: { $toString: "$questionIndex" } } }]
-  );
-  console.log(`${collectionName}: backfilled ${backfill.modifiedCount || 0} R3 lookup keys from questionIndex`);
   const indexes = await collection.indexes();
   for (const index of indexes) {
     if (index.name === "_id_") continue;
