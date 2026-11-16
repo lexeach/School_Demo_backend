@@ -20,6 +20,8 @@ const factorSchema = new mongoose.Schema({
 
 const r3FactorSchema = new mongoose.Schema({
   paper: { type: mongoose.Schema.Types.ObjectId, ref: "Paper", required: true },
+  // Exact existing Paper.questions subdocument _id; never generate or rewrite it here.
+  questionId: { type: String, required: true },
   questionIndex: { type: Number, required: true },
   originalQuestion: { type: mongoose.Schema.Types.Mixed, required: true },
   topic: { type: String, required: true },
@@ -27,5 +29,5 @@ const r3FactorSchema = new mongoose.Schema({
   factors: { type: [factorSchema], default: [] },
 }, { timestamps: true });
 
-r3FactorSchema.index({ paper: 1, questionIndex: 1 }, { unique: true });
+r3FactorSchema.index({ paper: 1, questionId: 1 }, { unique: true, partialFilterExpression: { questionId: { $type: 'string' } } });
 module.exports = mongoose.model("R3Factor", r3FactorSchema);
