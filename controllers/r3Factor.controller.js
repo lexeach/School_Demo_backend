@@ -53,9 +53,7 @@ const safeFactor = (factor, progressMap) => {
     parentFactorId: factor.parentFactorId,
     depth: factor.depth,
     learningContent: factor.learningContent,
-    verificationQuestions: (factor.verificationQuestions || []).map((q, i) => ({
-      question: q.question, options: q.options, questionNumber: i + 1
-    })),
+    verificationQuestions: [],
     children,
     ownVerified,
     effectiveVerified,
@@ -76,43 +74,27 @@ const findFactor = (items, id) => {
 };
 
 const makeFactorSet = async ({ factors, question, paper, parentId, depth }) => {
-  const output = [];
-  for (let i = 0; i < factors.length; i++) {
-    const raw = factors[i];
-    const factorId = `${parentId || "root"}_${depth}_${i + 1}_${Date.now().toString(36)}`;
-    const meta = {
-      topic: raw.name,
-      learningObjective: raw.description || `Understand ${raw.name} and how it contributes to ${question.question}`,
-      keywords: [raw.name, paper.subject, paper.chapter_from].filter(Boolean),
-    };
-    const generated = await generateVerificationQuestions({
-      originalQuestion: question,
-      ...meta,
-      language: paper.language || "English",
-    });
-    const questions = generated.slice(0, 3).map(q => ({
-      question: q.question,
-      options: Object.values(q.choices || q.options || {}),
-      correctAnswer: q.correctAnswer,
-    }));
-    if (questions.length !== 3 || questions.some(q => !q.question || q.options.length < 2 || !q.correctAnswer)) {
-      throw new Error(`AI did not generate a valid 3-question set for ${raw.name}`);
-    }
-    output.push({
-      factorId,
-      name: String(raw.name || `Factor ${i + 1}`),
-      description: String(raw.description || ""),
-      parentFactorId: parentId || null,
-      depth,
-      // Learning content is intentionally blank until the student requests it.
-      learningContent: "",
-      verificationQuestions: questions,
-      children: [],
-      expanded: false,
-    });
-  }
-  return output;
+  return factors.map((raw, i) => ({
+    factorId: `${parentId || "root"}_${depth}_${i + 1}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`,
+    name: String(raw.name || `Factor ${i + 1}`),
+    description: String(raw.description || ""),
+    parentFactorId: parentId || null,
+    depth,
+    // Verification questions and learning content are generated only on request.
+    learningContent: "",
+    verificationQuestions: [],
+    children: [],
+    expanded: false,
+  }));
 };
+
+const normalizeQuestion = (q) => ({
+  question: String(q.question || "").trim(),
+  options: Object.values(q.choices || q.options || {}).map(v => String(v)),
+  correctAnswer: String(q.correctAnswer || "").trim().toUpperCase(),
+});
+
+const questionKey = (q) => String(q.question || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 
 exports.getOrGenerate = async (req, res) => {
   try {
@@ -130,7 +112,7 @@ exports.getOrGenerate = async (req, res) => {
     const displayNumber = Number(question.questionNumber || questionNumber || 0);
     let record = await R3Factor.findOne({ paper: paperId, questionId: String(questionId) });
     if (!record) {
-      const prompt = `You are an expert school teacher. Analyse the exact question and identify the concept/topic actually required to solve it, not merely its chapter. Generate the topic, a secondary factor, and 2 to 5 immediate primary/root factors. Do not recursively decompose yet. For each factor provide only a concise student-friendly description. Do NOT generate learning content. The system generates a separate verification set for every factor. Return only JSON: {"topic":"","secondaryFactor":"","factors":[{"name":"","description":""}]}. Context: class=${paper.className}; subject=${paper.subject}; board=${paper.syllabus}; chapter=${paper.chapter_from}; language=${paper.language}. Question: ${JSON.stringify(question)}`;
+      const prompt = `You are an expert school teacher. Analyse the exact question and identify the concept/topic actually required to solve it, not merely its chapter. Generate the topic, a secondary factor, and 2 to 5 immediate primary/root factors. Do not recursively decompose yet. For each factor provide only a concise student-friendly description. Do NOT generate learning content or verification questions at this stage. Return only JSON: {"topic":"","secondaryFactor":"","factors":[{"name":"","description":""}]}. Context: class=${paper.className}; subject=${paper.subject}; board=${paper.syllabus}; chapter=${paper.chapter_from}; language=${paper.language}. Question: ${JSON.stringify(question)}`;
       const result = await ai.generateJson(prompt);
       if (!result?.topic || !result?.secondaryFactor || !Array.isArray(result.factors) || !result.factors.length) throw new Error("AI returned an invalid R3 structure.");
       const factors = await makeFactorSet({ factors: result.factors, question, paper, parentId: null, depth: 1 });
@@ -145,6 +127,64 @@ exports.getOrGenerate = async (req, res) => {
     const map = new Map(progress.map(p => [p.factorId, p]));
     return successResponse(res, 200, "R3 Factor loaded.", { _id: record._id, questionId: String(questionId), topic: record.topic, secondaryFactor: record.secondaryFactor, factors: record.factors.map(f => safeFactor(f, map)) });
   } catch (error) { console.error("R3 get/generate:", error); return errorResponse(res, error); }
+};
+
+exports.generateFactorVerificationQuestions = async (req, res) => {
+  try {
+    const { paperId, questionId, questionNumber, factorId } = req.body;
+    if (!paperId || !questionId || !factorId) return customErrorResponse(res, 400, "paperId, questionId and factorId are required.");
+    const paper = await Paper.findById(paperId);
+    if (!paper) return customErrorResponse(res, 404, "Paper not found.");
+    if (!(await authorizePaper(paper, req.user.id))) return customErrorResponse(res, 403, "You are not allowed to access this question.");
+    const question = resolveQuestion(paper, questionId);
+    if (!question) return customErrorResponse(res, 404, "Question reference does not belong to this paper.");
+    const record = await R3Factor.findOne({ paper: paperId, questionId: String(questionId) });
+    if (!record) return customErrorResponse(res, 404, "R3 record not found.");
+    const factor = findFactor(record.factors, factorId);
+    if (!factor) return customErrorResponse(res, 404, "Factor not found.");
+
+    const progress = await R3FactorProgress.findOneAndUpdate(
+      { paper: paperId, questionId: String(questionId), user: req.user.id, factorId },
+      { $setOnInsert: { questionIndex: Number(questionNumber || record.questionIndex), score: 0, totalQuestions: 3, status: "Pending", attempts: 0 } },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+    const previousKeys = new Set([
+      ...(progress.attemptHistory || []).flatMap(a => (a.questions || []).map(questionKey)),
+      ...((progress.activeQuestionSet?.questions || []).map(questionKey)),
+    ]);
+    const meta = {
+      originalQuestion: question,
+      topic: factor.name,
+      learningObjective: factor.description || `Understand ${factor.name} and how it contributes to ${record.topic}`,
+      keywords: [factor.name, paper.subject, paper.chapter_from].filter(Boolean),
+      language: paper.language || "English",
+    };
+
+    let chosen = null;
+    // Ask the existing question generator for a fresh set; retry if it repeats a past question.
+    for (let attempt = 0; attempt < 4 && !chosen; attempt++) {
+      const generated = await generateVerificationQuestions(meta);
+      const normalized = (generated || []).map(normalizeQuestion).filter(q => q.question && q.options.length === 4 && /^[A-D]$/.test(q.correctAnswer));
+      const unique = [];
+      const local = new Set();
+      for (const q of normalized) {
+        const key = questionKey(q);
+        if (!local.has(key) && !previousKeys.has(key)) { local.add(key); unique.push(q); }
+        if (unique.length === 3) break;
+      }
+      if (unique.length === 3) chosen = unique;
+    }
+    if (!chosen) return customErrorResponse(res, 502, "AI could not prepare three sufficiently new questions. Please try again.");
+
+    const attemptId = require("crypto").randomUUID();
+    progress.activeQuestionSet = { attemptId, questions: chosen };
+    progress.questionIndex = Number(questionNumber || record.questionIndex);
+    await progress.save();
+    return successResponse(res, 200, "New verification questions generated.", {
+      factorId, attemptId,
+      questions: chosen.map((q, i) => ({ question: q.question, options: q.options, questionNumber: i + 1 })),
+    });
+  } catch (error) { console.error("R3 generate verification questions:", error); return errorResponse(res, error); }
 };
 
 exports.generateFactorLearningContent = async (req, res) => {
@@ -231,8 +271,8 @@ Original question this R3 structure belongs to: ${JSON.stringify(question)}
 
 exports.submitFactorVerification = async (req, res) => {
   try {
-    const { paperId, questionId, questionNumber, factorId, answers } = req.body;
-    if (!paperId || !questionId || !factorId || !Array.isArray(answers)) return customErrorResponse(res, 400, "paperId, questionId, factorId and answers are required.");
+    const { paperId, questionId, questionNumber, factorId, attemptId, answers } = req.body;
+    if (!paperId || !questionId || !factorId || !attemptId || !Array.isArray(answers)) return customErrorResponse(res, 400, "paperId, questionId, factorId, attemptId and answers are required.");
     const paper = await Paper.findById(paperId);
     if (!paper) return customErrorResponse(res, 404, "Paper not found.");
     if (!(await authorizePaper(paper, req.user.id))) return customErrorResponse(res, 403, "You are not allowed to access this question.");
@@ -241,15 +281,36 @@ exports.submitFactorVerification = async (req, res) => {
     if (!record) return customErrorResponse(res, 404, "R3 record not found.");
     const factor = findFactor(record.factors, factorId);
     if (!factor) return customErrorResponse(res, 404, "Factor not found.");
-    if (answers.length !== 3) return customErrorResponse(res, 400, "Exactly 3 answers are required.");
-    const score = factor.verificationQuestions.reduce((sum, q, i) => sum + (String(answers[i]) === String(q.correctAnswer) ? 1 : 0), 0);
+    if (answers.length !== 3 || answers.some(a => !String(a || "").trim())) return customErrorResponse(res, 400, "Exactly 3 answers are required.");
+
+    const progress = await R3FactorProgress.findOne({ paper: paperId, questionId: String(questionId), user: req.user.id, factorId });
+    const active = progress?.activeQuestionSet;
+    if (!active || String(active.attemptId) !== String(attemptId) || !Array.isArray(active.questions) || active.questions.length !== 3) {
+      return customErrorResponse(res, 409, "This verification set has expired. Generate a new question set.");
+    }
+    const questions = active.questions;
+    const score = questions.reduce((sum, q, i) => sum + (String(answers[i]).toUpperCase() === String(q.correctAnswer).toUpperCase() ? 1 : 0), 0);
     const status = score === 3 ? "Completed" : "Pending";
-    await R3FactorProgress.findOneAndUpdate(
-      { paper: paperId, questionId: String(questionId), user: req.user.id, factorId },
-      { $set: { questionIndex: Number(questionNumber || record.questionIndex), score, totalQuestions: 3, status, lastAttemptAt: new Date() }, $inc: { attempts: 1 } },
-      { upsert: true, new: true, setDefaultsOnInsert: true }
-    );
-    return successResponse(res, 200, "R3 verification submitted.", { score, totalQuestions: 3, status });
+    const attempt = {
+      attemptId: active.attemptId,
+      attemptedAt: new Date(),
+      questions: questions.map((q, i) => ({
+        question: q.question, options: q.options, correctAnswer: q.correctAnswer,
+        selectedAnswer: String(answers[i]).toUpperCase(),
+        isCorrect: String(answers[i]).toUpperCase() === String(q.correctAnswer).toUpperCase(),
+      })),
+      score, totalQuestions: 3, status,
+    };
+    progress.attemptHistory = [...(progress.attemptHistory || []), attempt];
+    progress.score = score;
+    progress.totalQuestions = 3;
+    progress.status = status;
+    progress.attempts = (progress.attempts || 0) + 1;
+    progress.lastAttemptAt = new Date();
+    progress.activeQuestionSet = null;
+    progress.questionIndex = Number(questionNumber || record.questionIndex);
+    await progress.save();
+    return successResponse(res, 200, "R3 verification submitted.", { score, totalQuestions: 3, status, attemptNumber: progress.attempts });
   } catch (error) { console.error("R3 submit:", error); return errorResponse(res, error); }
 };
 

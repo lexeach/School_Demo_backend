@@ -12,6 +12,9 @@ const r3FactorProgressSchema = new mongoose.Schema({
   status: { type: String, enum: ["Pending", "Completed"], default: "Pending" },
   attempts: { type: Number, default: 0 },
   lastAttemptAt: { type: Date, default: null },
+  // User-specific active set; correctness is kept server-side until submission.
+  activeQuestionSet: { type: mongoose.Schema.Types.Mixed, default: null },
+  attemptHistory: { type: [mongoose.Schema.Types.Mixed], default: [] },
 }, { timestamps: true });
 
 r3FactorProgressSchema.index({ paper: 1, questionId: 1, user: 1, factorId: 1 }, { unique: true, partialFilterExpression: { questionId: { $type: 'string' } } });
