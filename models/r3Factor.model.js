@@ -16,6 +16,8 @@ const factorSchema = new mongoose.Schema({
   verificationQuestions: { type: [r3QuestionSchema], default: [] },
   children: { type: [mongoose.Schema.Types.Mixed], default: [] },
   expanded: { type: Boolean, default: false },
+  terminal: { type: Boolean, default: false },
+  expansionStatus: { type: String, enum: ["unexpanded", "expanded", "terminal"], default: "unexpanded" },
 }, { _id: false });
 
 const r3FactorSchema = new mongoose.Schema({

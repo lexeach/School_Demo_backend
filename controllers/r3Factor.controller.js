@@ -55,6 +55,8 @@ const safeFactor = (factor, progressMap) => {
     learningContent: factor.learningContent,
     verificationQuestions: [],
     children,
+    terminal: factor.terminal === true,
+    expansionStatus: factor.expansionStatus || (factor.children?.length ? "expanded" : "unexpanded"),
     ownVerified,
     effectiveVerified,
     canExploreFurther: !effectiveVerified && !hasChildren && (own?.attempts || 0) > 0,
@@ -73,6 +75,49 @@ const findFactor = (items, id) => {
   return null;
 };
 
+// Return the selected factor's lineage from root to parent. This is used to
+// prevent a descendant from reintroducing one of its own ancestor concepts.
+const findFactorPath = (items, targetId, path = []) => {
+  for (const item of items || []) {
+    const next = [...path, item];
+    if (String(item.factorId) === String(targetId)) return next;
+    const found = findFactorPath(item.children, targetId, next);
+    if (found) return found;
+  }
+  return null;
+};
+
+const normalizeConcept = (value) => String(value || "")
+  .toLowerCase()
+  .replace(/&/g, " and ")
+  .replace(/[^a-z0-9]+/g, " ")
+  .replace(/\b(the|a|an|of|for|and|in|to|concept|understanding|basics)\b/g, " ")
+  .replace(/\s+/g, " ")
+  .trim();
+
+const tokenSimilarity = (a, b) => {
+  const aa = new Set(normalizeConcept(a).split(" ").filter(Boolean));
+  const bb = new Set(normalizeConcept(b).split(" ").filter(Boolean));
+  if (!aa.size || !bb.size) return 0;
+  const intersection = [...aa].filter(x => bb.has(x)).length;
+  return intersection / new Set([...aa, ...bb]).size;
+};
+
+const isAncestorDuplicate = (candidate, ancestors) => {
+  const name = normalizeConcept(candidate?.name);
+  const description = normalizeConcept(candidate?.description);
+  return ancestors.some((ancestor) => {
+    const ancestorName = normalizeConcept(ancestor?.name);
+    const ancestorDescription = normalizeConcept(ancestor?.description);
+    if (name && ancestorName && name === ancestorName) return true;
+    // Catch simple wording variations without suppressing merely related concepts.
+    if (name && ancestorName && tokenSimilarity(name, ancestorName) >= 0.82) return true;
+    if (name && ancestorDescription && ancestorDescription.includes(name)) return true;
+    if (description && ancestorName && description.includes(ancestorName)) return true;
+    return false;
+  });
+};
+
 const makeFactorSet = async ({ factors, question, paper, parentId, depth }) => {
   return factors.map((raw, i) => ({
     factorId: `${parentId || "root"}_${depth}_${i + 1}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`,
@@ -85,6 +130,8 @@ const makeFactorSet = async ({ factors, question, paper, parentId, depth }) => {
     verificationQuestions: [],
     children: [],
     expanded: false,
+    terminal: false,
+    expansionStatus: "unexpanded",
   }));
 };
 
@@ -329,16 +376,68 @@ exports.expandFactor = async (req, res) => {
     const progress = await R3FactorProgress.findOne({ paper: paperId, questionId: String(questionId), user: req.user.id, factorId });
     if (progress?.status === "Completed") return customErrorResponse(res, 409, "This factor is already verified; deeper factors are not required.");
     if (!progress || progress.attempts < 1) return customErrorResponse(res, 409, "Attempt the factor verification before exploring further.");
-    if (factor.children?.length) return successResponse(res, 200, "Deeper factors already exist.", { children: factor.children });
-    const prompt = `Treat this failed Primary Factor as a Secondary Factor. Generate 2 to 5 immediate underlying Primary Factors only. For each provide only name and a concise student-friendly description. Do NOT generate learning content. Do not expand recursively. Return only JSON {"factors":[{"name":"","description":""}]}. Subject: ${record.originalQuestion?.subject || ""}. Parent factor: ${factor.name}. Description: ${factor.description}. Original question: ${JSON.stringify(record.originalQuestion)}`;
+    if (factor.children?.length) return successResponse(res, 200, "Deeper factors already exist.", { children: factor.children, terminal: false });
+    if (factor.terminal === true || factor.expansionStatus === "terminal") {
+      return successResponse(res, 200, "This is a terminal R3 factor; no further decomposition is appropriate.", { children: [], terminal: true });
+    }
+
+    const lineage = findFactorPath(record.factors, factorId) || [factor];
+    const ancestors = lineage.slice(0, -1);
+    const ancestorContext = ancestors.map((item, index) => `${index + 1}. ${item.name}: ${item.description || ""}`).join("\n") || "None";
+    const prompt = `You are decomposing an R3 learning factor. Decide whether this factor has meaningful, distinct, simpler prerequisite/root factors.
+
+STRICT ANTI-CIRCULARITY RULES:
+- Generate 2 to 5 immediate Primary Factors only when they are genuinely distinct prerequisite concepts.
+- NEVER return the current factor itself, a synonym/rewording of it, or any concept already present in its ancestor chain.
+- NEVER return an ancestor concept under a different name.
+- Do not reverse the parent-child relationship or create a circular dependency.
+- Do not split a factor artificially just to produce children.
+- If no meaningful distinct decomposition exists, set terminal=true and return factors=[].
+- Do NOT generate learning content or verification questions.
+- Do NOT expand recursively.
+
+Return valid JSON only: {"terminal":true|false,"factors":[{"name":"","description":""}]}. Set terminal=true only when no meaningful distinct prerequisite factors exist. Set terminal=false when you provide 2 to 5 valid factors.
+
+Ancestor concepts (must not be repeated):
+${ancestorContext}
+Current factor: ${factor.name}
+Current description: ${factor.description || ""}
+Subject: ${paperAccess.subject || ""}
+Chapter: ${paperAccess.chapter_from || ""}
+Original question: ${JSON.stringify(record.originalQuestion)}`;
     const result = await ai.generateJson(prompt);
-    if (!Array.isArray(result?.factors) || !result.factors.length) throw new Error("AI returned no deeper factors.");
+    if (!Array.isArray(result?.factors)) throw new Error("AI returned an invalid deeper-factor response.");
+    const unique = [];
+    const seen = new Set();
+    for (const candidate of result.factors) {
+      if (!candidate?.name || isAncestorDuplicate(candidate, lineage)) continue;
+      const key = normalizeConcept(candidate.name);
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      unique.push(candidate);
+    }
+    // An empty/fully-filtered response is treated as terminal only when the AI
+    // explicitly confirms it, or when it supplied candidates that all duplicated
+    // the ancestor lineage. An empty ambiguous response is surfaced as an error.
+    if (result.terminal === true || (result.factors.length > 0 && unique.length === 0)) {
+      factor.children = [];
+      factor.terminal = true;
+      factor.expansionStatus = "terminal";
+      factor.expanded = true;
+      record.markModified("factors");
+      await record.save();
+      return successResponse(res, 200, "This is a terminal R3 factor; no further decomposition is appropriate.", { children: [], terminal: true });
+    }
+    if (unique.length < 2) throw new Error("AI could not identify enough distinct deeper factors. Please retry.");
     const paper = paperAccess;
-    factor.children = await makeFactorSet({ factors: result.factors, question: record.originalQuestion, paper, parentId: factor.factorId, depth: factor.depth + 1 });
+    factor.children = await makeFactorSet({ factors: unique.slice(0, 5), question: record.originalQuestion, paper, parentId: factor.factorId, depth: factor.depth + 1 });
+    factor.terminal = false;
+    factor.expansionStatus = "expanded";
     factor.expanded = true;
+    record.markModified("factors");
     await record.save();
     const progressRows = await R3FactorProgress.find({ paper: paperId, questionId: String(questionId), user: req.user.id });
     const map = new Map(progressRows.map(p => [p.factorId, p]));
-    return successResponse(res, 200, "Deeper R3 factors generated.", { children: factor.children.map(f => safeFactor(f, map)) });
+    return successResponse(res, 200, "Deeper R3 factors generated.", { children: factor.children.map(f => safeFactor(f, map)), terminal: false });
   } catch (error) { console.error("R3 expand:", error); return errorResponse(res, error); }
 };
