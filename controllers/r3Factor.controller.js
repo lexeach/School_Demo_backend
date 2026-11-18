@@ -518,7 +518,7 @@ Original question: ${JSON.stringify(record.originalQuestion)}`;
     }
 
     const paper = paperAccess;
-    factor.children = await makeFactorSet({ factors: unique.slice(0, 5), question: record.originalQuestion, paper, parentId: factor.factorId, depth: factor.depth + 1 });
+    factor.children = await makeFactorSet({ factors: accepted.slice(0, 5), question: record.originalQuestion, paper, parentId: factor.factorId, depth: factor.depth + 1 });
     factor.terminal = false;
     factor.expansionStatus = "expanded";
     factor.expanded = true;
