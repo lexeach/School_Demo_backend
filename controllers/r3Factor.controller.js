@@ -62,7 +62,17 @@ const safeFactor = (factor, progressMap) => {
     canExploreFurther: !effectiveVerified && !hasChildren && (own?.attempts || 0) > 0,
     attempts: own?.attempts || 0,
     score: own?.score ?? null,
-    totalQuestions: own?.totalQuestions ?? 3
+    totalQuestions: own?.totalQuestions ?? 3,
+    bestScore: (own?.attemptHistory || []).reduce((best, item) => Math.max(best, Number(item.score || 0)), 0),
+    // Expose only the per-attempt summary to the workspace. Full question/answer
+    // snapshots remain stored in MongoDB and are not duplicated in the tree payload.
+    attemptHistory: (own?.attemptHistory || []).map((item, index) => ({
+      attemptNumber: index + 1,
+      attemptedAt: item.attemptedAt || null,
+      score: Number(item.score || 0),
+      totalQuestions: Number(item.totalQuestions || 3),
+      status: item.status || (Number(item.score || 0) === 3 ? "Completed" : "Pending"),
+    })),
   };
 };
 
