@@ -5,6 +5,7 @@ const controller = require("../controllers/r3Factor.controller");
 
 router.post("/generate", auth, controller.getOrGenerate);
 router.post("/verify", auth, controller.submitFactorVerification);
+router.post("/learning-content", auth, controller.generateFactorLearningContent);
 router.post("/expand", auth, controller.expandFactor);
 
 module.exports = router;

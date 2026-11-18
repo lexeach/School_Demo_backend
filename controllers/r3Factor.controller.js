@@ -104,7 +104,8 @@ const makeFactorSet = async ({ factors, question, paper, parentId, depth }) => {
       description: String(raw.description || ""),
       parentFactorId: parentId || null,
       depth,
-      learningContent: String(raw.learningContent || raw.description || `Study the concept of ${raw.name}.`),
+      // Learning content is intentionally blank until the student requests it.
+      learningContent: "",
       verificationQuestions: questions,
       children: [],
       expanded: false,
@@ -129,7 +130,7 @@ exports.getOrGenerate = async (req, res) => {
     const displayNumber = Number(question.questionNumber || questionNumber || 0);
     let record = await R3Factor.findOne({ paper: paperId, questionId: String(questionId) });
     if (!record) {
-      const prompt = `You are an expert school teacher. Analyse the exact question and identify the concept/topic actually required to solve it, not merely its chapter. Generate the topic, a secondary factor, and 2 to 5 immediate primary/root factors. Do not recursively decompose yet. For each factor provide a concise student-friendly description and learningContent. The system will generate a separate verification set for every factor. Return only JSON: {"topic":"","secondaryFactor":"","factors":[{"name":"","description":"","learningContent":""}]}. Context: class=${paper.className}; subject=${paper.subject}; board=${paper.syllabus}; chapter=${paper.chapter_from}; language=${paper.language}. Question: ${JSON.stringify(question)}`;
+      const prompt = `You are an expert school teacher. Analyse the exact question and identify the concept/topic actually required to solve it, not merely its chapter. Generate the topic, a secondary factor, and 2 to 5 immediate primary/root factors. Do not recursively decompose yet. For each factor provide only a concise student-friendly description. Do NOT generate learning content. The system generates a separate verification set for every factor. Return only JSON: {"topic":"","secondaryFactor":"","factors":[{"name":"","description":""}]}. Context: class=${paper.className}; subject=${paper.subject}; board=${paper.syllabus}; chapter=${paper.chapter_from}; language=${paper.language}. Question: ${JSON.stringify(question)}`;
       const result = await ai.generateJson(prompt);
       if (!result?.topic || !result?.secondaryFactor || !Array.isArray(result.factors) || !result.factors.length) throw new Error("AI returned an invalid R3 structure.");
       const factors = await makeFactorSet({ factors: result.factors, question, paper, parentId: null, depth: 1 });
@@ -144,6 +145,88 @@ exports.getOrGenerate = async (req, res) => {
     const map = new Map(progress.map(p => [p.factorId, p]));
     return successResponse(res, 200, "R3 Factor loaded.", { _id: record._id, questionId: String(questionId), topic: record.topic, secondaryFactor: record.secondaryFactor, factors: record.factors.map(f => safeFactor(f, map)) });
   } catch (error) { console.error("R3 get/generate:", error); return errorResponse(res, error); }
+};
+
+exports.generateFactorLearningContent = async (req, res) => {
+  try {
+    const { paperId, questionId, questionNumber, factorId } = req.body;
+    if (!paperId || !questionId || !factorId) {
+      return customErrorResponse(res, 400, "paperId, questionId and factorId are required.");
+    }
+
+    const paper = await Paper.findById(paperId);
+    if (!paper) return customErrorResponse(res, 404, "Paper not found.");
+    if (!(await authorizePaper(paper, req.user.id))) {
+      return customErrorResponse(res, 403, "You are not allowed to access this question.");
+    }
+    const question = resolveQuestion(paper, questionId);
+    if (!question) return customErrorResponse(res, 404, "Question reference does not belong to this paper.");
+
+    const record = await R3Factor.findOne({ paper: paperId, questionId: String(questionId) });
+    if (!record) return customErrorResponse(res, 404, "R3 record not found.");
+
+    const factor = findFactor(record.factors, factorId);
+    if (!factor) return customErrorResponse(res, 404, "Factor not found.");
+
+    // Reuse existing content; never spend tokens regenerating it implicitly.
+    if (String(factor.learningContent || "").trim()) {
+      return successResponse(res, 200, "Learning content already exists.", {
+        factorId,
+        learningContent: factor.learningContent,
+        reused: true,
+      });
+    }
+
+    const parentFactor = factor.parentFactorId
+      ? findFactor(record.factors, factor.parentFactorId)
+      : null;
+    const language = paper.language || "English";
+    const prompt = `You are an excellent school teacher and learning-content writer.
+Create learning content for ONE R3 factor only.
+
+STRICT REQUIREMENTS:
+- Write approximately 150 to 200 words (target 170-180 words).
+- Use language: ${language}. Do not switch languages.
+- Match the learner's level: class ${paper.className || "school level"}.
+- Explain the factor clearly from first principles, in student-friendly language.
+- Include a simple practical or everyday-life example where relevant.
+- Explain why this factor matters for understanding the question/topic.
+- Keep the explanation focused on this factor; do not explain the entire chapter.
+- Do not include quiz questions, MCQs, answer keys, headings unrelated to the factor, markdown tables, or promotional text.
+- Return valid JSON only in this exact shape: {"learningContent":"..."}
+
+Context:
+Class: ${paper.className || ""}
+Subject: ${paper.subject || ""}
+Board/Syllabus: ${paper.syllabus || ""}
+Chapter: ${paper.chapter_from || ""}
+AI-determined topic for this question: ${record.topic || ""}
+Secondary factor: ${record.secondaryFactor || ""}
+${parentFactor ? `Parent factor: ${parentFactor.name}\nParent description: ${parentFactor.description || ""}` : "This is a root-level primary factor."}
+Factor name: ${factor.name}
+Factor description: ${factor.description || ""}
+Original question this R3 structure belongs to: ${JSON.stringify(question)}
+`;
+    const generated = await ai.generateJson(prompt);
+    const learningContent = String(generated?.learningContent || "").trim();
+    if (!learningContent) throw new Error("AI did not return learning content.");
+
+    // Save only inside this question's existing R3 document and this factor.
+    factor.learningContent = learningContent;
+    // children are stored as Mixed objects; explicitly mark the full factor tree modified
+    // so generated content is persisted for both root and nested factors.
+    record.markModified("factors");
+    await record.save();
+
+    return successResponse(res, 200, "Learning content generated successfully.", {
+      factorId,
+      learningContent,
+      reused: false,
+    });
+  } catch (error) {
+    console.error("R3 learning content generation:", error);
+    return errorResponse(res, error);
+  }
 };
 
 exports.submitFactorVerification = async (req, res) => {
@@ -186,7 +269,7 @@ exports.expandFactor = async (req, res) => {
     if (progress?.status === "Completed") return customErrorResponse(res, 409, "This factor is already verified; deeper factors are not required.");
     if (!progress || progress.attempts < 1) return customErrorResponse(res, 409, "Attempt the factor verification before exploring further.");
     if (factor.children?.length) return successResponse(res, 200, "Deeper factors already exist.", { children: factor.children });
-    const prompt = `Treat this failed Primary Factor as a Secondary Factor. Generate 2 to 5 immediate underlying Primary Factors only. For each provide name, description and concise learningContent. Do not expand recursively. Return only JSON {"factors":[{"name":"","description":"","learningContent":""}]}. Subject: ${record.originalQuestion?.subject || ""}. Parent factor: ${factor.name}. Description: ${factor.description}. Original question: ${JSON.stringify(record.originalQuestion)}`;
+    const prompt = `Treat this failed Primary Factor as a Secondary Factor. Generate 2 to 5 immediate underlying Primary Factors only. For each provide only name and a concise student-friendly description. Do NOT generate learning content. Do not expand recursively. Return only JSON {"factors":[{"name":"","description":""}]}. Subject: ${record.originalQuestion?.subject || ""}. Parent factor: ${factor.name}. Description: ${factor.description}. Original question: ${JSON.stringify(record.originalQuestion)}`;
     const result = await ai.generateJson(prompt);
     if (!Array.isArray(result?.factors) || !result.factors.length) throw new Error("AI returned no deeper factors.");
     const paper = paperAccess;
