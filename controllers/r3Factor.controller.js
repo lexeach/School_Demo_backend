@@ -411,33 +411,45 @@ exports.expandFactor = async (req, res) => {
       return candidateName === siblingName || tokenSimilarity(candidateName, siblingName) >= 0.90;
     });
 
-    const prompt = `You are decomposing an R3 learning factor. Identify meaningful, distinct, simpler prerequisite/root factors.
+    const rootConcept = String(record.secondaryFactor || record.topic || "").trim();
+    const rootTopic = String(record.topic || "").trim();
+    const prompt = `You are decomposing an R3 learning factor while preserving the relevance of the ORIGINAL ROOT CONCEPT.
+
+IMMUTABLE ROOT CONTEXT (must govern every level of this recursive tree):
+- Original topic: ${rootTopic || "Not separately specified"}
+- Original top-level Secondary Factor: ${rootConcept || "Not separately specified"}
+- Original question: ${JSON.stringify(record.originalQuestion)}
+
+CURRENT PATH:
+${ancestorContext}
+Current factor: ${factor.name}
+Current factor description: ${factor.description || ""}
 
 STRICT R3 RULES:
-- Suggest 2 to 5 immediate Primary Factors when they genuinely exist.
+- Suggest 2 to 5 immediate Primary Factors only when they genuinely help explain or understand the CURRENT factor.
+- EVERY suggested factor must also have a clear, meaningful conceptual connection to the ORIGINAL top-level Secondary Factor (${rootConcept || rootTopic}). It must contribute to understanding the root concept, not merely belong to the same subject, chapter, broad discipline, or a loosely associated topic.
+- Validate each candidate on TWO independent tests: (1) Parent relevance: does it explain a necessary component, prerequisite, property, mechanism, or application of the current factor? (2) Root relevance: can its contribution be traced through the current factor/path to understanding the original top-level Secondary Factor? Reject a candidate if either test fails.
+- Do not follow a chain of incidental associations. A factor being related to the previous factor is NOT sufficient if it has drifted away from the original root concept.
+- Do not introduce concepts from neighboring chapters or broad subject areas merely because they are related to the current factor.
 - NEVER return the current factor itself, a synonym/rewording of it, or a concept already present in its ancestor chain.
 - Do not reverse the parent-child relationship or create a circular dependency.
 - Do not split a factor artificially just to produce children.
 - Do not generate learning content or verification questions.
 - Do NOT expand recursively; return only the immediate next level.
-- If no meaningful distinct decomposition exists, return terminal=true and an empty factors array.
-- If you can identify some valid factors, include them even if other possible factors might overlap with ancestors. The server will individually skip duplicates.
+- If no meaningful distinct factors pass BOTH relevance tests, return terminal=true and an empty factors array.
+- Return only candidates that pass BOTH tests. Explain the parent and root connection briefly in separate fields so the server can independently validate the rationale.
 
-Return valid JSON only: {"terminal":true|false,"factors":[{"name":"","description":""}]}. Use terminal=true ONLY when no meaningful distinct prerequisite factor exists. If any valid factors exist, return terminal=false and include them.
+Return valid JSON only: {"terminal":true|false,"factors":[{"name":"","description":"","parentRelevance":"brief explanation","rootRelevance":"brief explanation connecting this factor back to the original top-level Secondary Factor"}]}. Use terminal=true ONLY when no meaningful distinct factor passes both tests. If any candidates pass, return terminal=false and include them.
 
-Ancestor concepts (must not be repeated):
-${ancestorContext}
-Current factor: ${factor.name}
-Current description: ${factor.description || ""}
 Subject: ${paperAccess.subject || ""}
-Chapter: ${paperAccess.chapter_from || ""}
-Original question: ${JSON.stringify(record.originalQuestion)}`;
+Chapter: ${paperAccess.chapter_from || ""}`;
 
     // Controlled server-side retry is used only when the model returns no
     // usable candidates. A partially valid set is accepted immediately.
     const MAX_GENERATION_TRIES = 3;
     let accepted = [];
     let skippedDuplicates = 0;
+    let skippedIrrelevant = 0;
     let explicitlyTerminal = false;
     let lastCandidateCount = 0;
     const rejectedNames = [];
@@ -479,11 +491,41 @@ Original question: ${JSON.stringify(record.originalQuestion)}`;
       lastCandidateCount = result.factors.length;
       explicitlyTerminal = result.terminal === true && result.factors.length === 0;
 
-      // Partial acceptance: one or more valid factors are enough. Do not reject
-      // the complete AI set because another candidate was a duplicate.
+      // Independently validate each non-duplicate candidate against BOTH its
+      // immediate parent and the immutable original root concept. This prevents
+      // recursive concept drift across deeper levels.
       if (uniqueThisTry.length > 0) {
-        accepted = uniqueThisTry;
-        break;
+        const relevancePrompt = `You are a strict curriculum relevance auditor for an R3 recursive learning tree. Evaluate each candidate independently.
+
+ORIGINAL ROOT TOPIC: ${rootTopic || "Not separately specified"}
+ORIGINAL TOP-LEVEL SECONDARY FACTOR: ${rootConcept || rootTopic}
+CURRENT PARENT FACTOR: ${factor.name}
+CURRENT PARENT DESCRIPTION: ${factor.description || ""}
+ANCESTOR PATH: ${ancestorContext}
+
+A candidate is ACCEPTABLE only if BOTH conditions are satisfied:
+1. Parent relevance: it is a genuine prerequisite/component/property/mechanism that helps explain the current parent.
+2. Root relevance: its conceptual contribution can be traced through the path to understanding the original top-level Secondary Factor. Mere same-subject, same-chapter, broad-domain, or incidental association is NOT enough. Reject concept drift.
+
+Candidates (array indexes are zero-based): ${JSON.stringify(uniqueThisTry.map((item, index) => ({ index, name: item.name, description: item.description || "", claimedParentRelevance: item.parentRelevance || "", claimedRootRelevance: item.rootRelevance || "" })))}
+
+Return JSON only: {"acceptedIndexes":[0],"rejected":[{"index":1,"reason":"short reason"}]}. Include an index only if BOTH relevance conditions clearly pass. When uncertain, reject.`;
+        let relevanceResult;
+        try {
+          relevanceResult = await ai.generateJson(relevancePrompt);
+        } catch (validationError) {
+          console.error("R3 relevance validation failed; retrying candidate generation:", validationError);
+          relevanceResult = null;
+        }
+        const acceptedIndexes = Array.isArray(relevanceResult?.acceptedIndexes)
+          ? [...new Set(relevanceResult.acceptedIndexes.map(Number).filter(index => Number.isInteger(index) && index >= 0 && index < uniqueThisTry.length))]
+          : [];
+        const validated = acceptedIndexes.map(index => uniqueThisTry[index]);
+        skippedIrrelevant += Math.max(0, uniqueThisTry.length - validated.length);
+        if (validated.length > 0) {
+          accepted = validated;
+          break;
+        }
       }
 
       // An explicit empty terminal response is the only route to Terminal.
@@ -502,7 +544,7 @@ Original question: ${JSON.stringify(record.originalQuestion)}`;
       record.markModified("factors");
       await record.save();
       return successResponse(res, 200, "This is a terminal R3 factor; no further decomposition is appropriate.", {
-        children: [], terminal: true, skippedDuplicates,
+        children: [], terminal: true, skippedDuplicates, skippedIrrelevant,
       });
     }
 
@@ -514,7 +556,7 @@ Original question: ${JSON.stringify(record.originalQuestion)}`;
       factor.expanded = false;
       record.markModified("factors");
       await record.save();
-      throw new Error(`AI did not return any new distinct factors after ${MAX_GENERATION_TRIES} attempts. ${lastCandidateCount} candidates were checked and duplicates/empty results were skipped. Please retry.`);
+      throw new Error(`AI did not return any new factors that passed duplicate and root-relevance checks after ${MAX_GENERATION_TRIES} attempts. ${lastCandidateCount} candidates were checked; ${skippedDuplicates} duplicates and ${skippedIrrelevant} irrelevant candidates were skipped. The factor remains expandable; please retry later.`);
     }
 
     const paper = paperAccess;
@@ -531,6 +573,7 @@ Original question: ${JSON.stringify(record.originalQuestion)}`;
       terminal: false,
       acceptedCount: factor.children.length,
       skippedDuplicates,
+      skippedIrrelevant,
     });
   } catch (error) { console.error("R3 expand:", error); return errorResponse(res, error); }
 };
