@@ -394,19 +394,36 @@ exports.expandFactor = async (req, res) => {
     const lineage = findFactorPath(record.factors, factorId) || [factor];
     const ancestors = lineage.slice(0, -1);
     const ancestorContext = ancestors.map((item, index) => `${index + 1}. ${item.name}: ${item.description || ""}`).join("\n") || "None";
-    const prompt = `You are decomposing an R3 learning factor. Decide whether this factor has meaningful, distinct, simpler prerequisite/root factors.
 
-STRICT ANTI-CIRCULARITY RULES:
-- Generate 2 to 5 immediate Primary Factors only when they are genuinely distinct prerequisite concepts.
-- NEVER return the current factor itself, a synonym/rewording of it, or any concept already present in its ancestor chain.
-- NEVER return an ancestor concept under a different name.
+    // Compare a candidate with factors already present at the same sibling level.
+    // Keep this stricter for near-identical concepts only; related concepts may
+    // still be valid children and should not be suppressed merely for being related.
+    const parent = factor.parentFactorId
+      ? findFactor(record.factors, factor.parentFactorId)
+      : null;
+    const existingSiblings = (parent ? (parent.children || []) : (record.factors || []))
+      .filter(item => String(item.factorId) !== String(factorId));
+
+    const isSiblingDuplicate = (candidate) => existingSiblings.some((sibling) => {
+      const candidateName = normalizeConcept(candidate?.name);
+      const siblingName = normalizeConcept(sibling?.name);
+      if (!candidateName || !siblingName) return false;
+      return candidateName === siblingName || tokenSimilarity(candidateName, siblingName) >= 0.90;
+    });
+
+    const prompt = `You are decomposing an R3 learning factor. Identify meaningful, distinct, simpler prerequisite/root factors.
+
+STRICT R3 RULES:
+- Suggest 2 to 5 immediate Primary Factors when they genuinely exist.
+- NEVER return the current factor itself, a synonym/rewording of it, or a concept already present in its ancestor chain.
 - Do not reverse the parent-child relationship or create a circular dependency.
 - Do not split a factor artificially just to produce children.
-- If no meaningful distinct decomposition exists, set terminal=true and return factors=[].
-- Do NOT generate learning content or verification questions.
-- Do NOT expand recursively.
+- Do not generate learning content or verification questions.
+- Do NOT expand recursively; return only the immediate next level.
+- If no meaningful distinct decomposition exists, return terminal=true and an empty factors array.
+- If you can identify some valid factors, include them even if other possible factors might overlap with ancestors. The server will individually skip duplicates.
 
-Return valid JSON only: {"terminal":true|false,"factors":[{"name":"","description":""}]}. Set terminal=true only when no meaningful distinct prerequisite factors exist. Set terminal=false when you provide 2 to 5 valid factors.
+Return valid JSON only: {"terminal":true|false,"factors":[{"name":"","description":""}]}. Use terminal=true ONLY when no meaningful distinct prerequisite factor exists. If any valid factors exist, return terminal=false and include them.
 
 Ancestor concepts (must not be repeated):
 ${ancestorContext}
@@ -415,30 +432,91 @@ Current description: ${factor.description || ""}
 Subject: ${paperAccess.subject || ""}
 Chapter: ${paperAccess.chapter_from || ""}
 Original question: ${JSON.stringify(record.originalQuestion)}`;
-    const result = await ai.generateJson(prompt);
-    if (!Array.isArray(result?.factors)) throw new Error("AI returned an invalid deeper-factor response.");
-    const unique = [];
-    const seen = new Set();
-    for (const candidate of result.factors) {
-      if (!candidate?.name || isAncestorDuplicate(candidate, lineage)) continue;
-      const key = normalizeConcept(candidate.name);
-      if (!key || seen.has(key)) continue;
-      seen.add(key);
-      unique.push(candidate);
+
+    // Controlled server-side retry is used only when the model returns no
+    // usable candidates. A partially valid set is accepted immediately.
+    const MAX_GENERATION_TRIES = 3;
+    let accepted = [];
+    let skippedDuplicates = 0;
+    let explicitlyTerminal = false;
+    let lastCandidateCount = 0;
+    const rejectedNames = [];
+
+    for (let generationTry = 1; generationTry <= MAX_GENERATION_TRIES; generationTry += 1) {
+      const attemptPrompt = generationTry === 1
+        ? prompt
+        : `${prompt}\n\nRetry ${generationTry}: Do not repeat any of these rejected/duplicate candidates. Find different valid prerequisite factors if they genuinely exist: ${rejectedNames.join("; ") || "None"}. If no distinct factors genuinely exist, return terminal=true with factors=[].`;
+      const result = await ai.generateJson(attemptPrompt);
+      if (!Array.isArray(result?.factors)) {
+        throw new Error("AI returned an invalid deeper-factor response. Please retry.");
+      }
+
+      const uniqueThisTry = [];
+      const seenThisTry = new Set();
+      let duplicateCountThisTry = 0;
+
+      for (const candidate of result.factors) {
+        if (!candidate?.name || !String(candidate.name).trim()) {
+          duplicateCountThisTry += 1;
+          continue;
+        }
+        const key = normalizeConcept(candidate.name);
+        const duplicate = !key
+          || isAncestorDuplicate(candidate, lineage)
+          || isSiblingDuplicate(candidate)
+          || seenThisTry.has(key);
+
+        if (duplicate) {
+          duplicateCountThisTry += 1;
+          if (candidate?.name) rejectedNames.push(String(candidate.name).trim());
+          continue;
+        }
+        seenThisTry.add(key);
+        uniqueThisTry.push(candidate);
+      }
+
+      skippedDuplicates += duplicateCountThisTry;
+      lastCandidateCount = result.factors.length;
+      explicitlyTerminal = result.terminal === true && result.factors.length === 0;
+
+      // Partial acceptance: one or more valid factors are enough. Do not reject
+      // the complete AI set because another candidate was a duplicate.
+      if (uniqueThisTry.length > 0) {
+        accepted = uniqueThisTry;
+        break;
+      }
+
+      // An explicit empty terminal response is the only route to Terminal.
+      if (explicitlyTerminal) break;
+
+      // All candidates were duplicates (or the response was ambiguously empty):
+      // ask the model again automatically. Never mark the factor terminal merely
+      // because filtering removed every candidate.
     }
-    // An empty/fully-filtered response is treated as terminal only when the AI
-    // explicitly confirms it, or when it supplied candidates that all duplicated
-    // the ancestor lineage. An empty ambiguous response is surfaced as an error.
-    if (result.terminal === true || (result.factors.length > 0 && unique.length === 0)) {
+
+    if (accepted.length === 0 && explicitlyTerminal) {
       factor.children = [];
       factor.terminal = true;
       factor.expansionStatus = "terminal";
       factor.expanded = true;
       record.markModified("factors");
       await record.save();
-      return successResponse(res, 200, "This is a terminal R3 factor; no further decomposition is appropriate.", { children: [], terminal: true });
+      return successResponse(res, 200, "This is a terminal R3 factor; no further decomposition is appropriate.", {
+        children: [], terminal: true, skippedDuplicates,
+      });
     }
-    if (unique.length < 2) throw new Error("AI could not identify enough distinct deeper factors. Please retry.");
+
+    if (accepted.length === 0) {
+      // Keep the factor unexpanded so the learner can retry later. In particular,
+      // duplicate-only responses must not be converted into a false terminal node.
+      factor.terminal = false;
+      factor.expansionStatus = "unexpanded";
+      factor.expanded = false;
+      record.markModified("factors");
+      await record.save();
+      throw new Error(`AI did not return any new distinct factors after ${MAX_GENERATION_TRIES} attempts. ${lastCandidateCount} candidates were checked and duplicates/empty results were skipped. Please retry.`);
+    }
+
     const paper = paperAccess;
     factor.children = await makeFactorSet({ factors: unique.slice(0, 5), question: record.originalQuestion, paper, parentId: factor.factorId, depth: factor.depth + 1 });
     factor.terminal = false;
@@ -448,6 +526,11 @@ Original question: ${JSON.stringify(record.originalQuestion)}`;
     await record.save();
     const progressRows = await R3FactorProgress.find({ paper: paperId, questionId: String(questionId), user: req.user.id });
     const map = new Map(progressRows.map(p => [p.factorId, p]));
-    return successResponse(res, 200, "Deeper R3 factors generated.", { children: factor.children.map(f => safeFactor(f, map)), terminal: false });
+    return successResponse(res, 200, "Deeper R3 factors generated.", {
+      children: factor.children.map(f => safeFactor(f, map)),
+      terminal: false,
+      acceptedCount: factor.children.length,
+      skippedDuplicates,
+    });
   } catch (error) { console.error("R3 expand:", error); return errorResponse(res, error); }
 };
